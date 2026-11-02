@@ -1,0 +1,139 @@
+# The "web" app: several identical pods behind one Service. Each pod writes its own page at startup
+# (an init container) so you can SEE which pod answered. Everything uses the one nginx image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: demo
+data:
+  APP_MESSAGE: "Running on Kubernetes"
+  default.conf: |
+    server {
+      listen 80;
+      root /usr/share/nginx/html;
+      add_header Cache-Control "no-store" always;
+      location = /healthz { default_type text/plain; return 200 "ok\n"; }
+      location / { try_files $uri $uri/ =404; }
+    }
+  render.sh: |
+    #!/bin/sh
+    # Runs once per pod, before nginx starts: writes the page that shows this pod's identity.
+    set -e
+    cat > /html/index.html <<EOF
+    <!doctype html>
+    <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${POD_NAME}</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; background: #f5f6f8; color: #1b1f24; }
+      header { background: #326ce5; color: #fff; padding: 28px 24px; }
+      header p { margin: 0 0 6px; font-size: 14px; letter-spacing: .08em; text-transform: uppercase; opacity: .85; }
+      header h1 { margin: 0; font-size: 30px; word-break: break-all; }
+      main { max-width: 560px; margin: 24px auto; padding: 0 16px; }
+      .msg { font-size: 20px; margin: 0 0 18px; }
+      dl { display: grid; grid-template-columns: 140px 1fr; gap: 10px 16px; background: #fff; padding: 20px; border-radius: 10px; }
+      dt { color: #5b6470; } dd { margin: 0; font-weight: 600; word-break: break-all; }
+    </style></head>
+    <body>
+    <header><p>Served by Kubernetes pod</p><h1>${POD_NAME}</h1></header>
+    <main>
+      <p class="msg">${APP_MESSAGE}</p>
+      <dl>
+        <dt>Version</dt><dd>Version ${APP_VERSION}</dd>
+        <dt>Namespace</dt><dd>${POD_NAMESPACE}</dd>
+        <dt>Pod IP</dt><dd>${POD_IP}</dd>
+        <dt>Node</dt><dd>${NODE_NAME}</dd>
+      </dl>
+    </main></body></html>
+    EOF
+    echo "${POD_NAME}" > /html/whoami.txt
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: demo
+  labels:
+    app: web
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # never remove a working pod before its replacement is Ready
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: web
+        version: "1"
+    spec:
+      terminationGracePeriodSeconds: 20
+      initContainers:
+        - name: render
+          image: nginx:1.27-alpine
+          command: ["/bin/sh", "/config/render.sh"]
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: APP_VERSION          # comes from the pod's "version" label: change the label, get a rollout
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['version']" } }
+            - name: APP_MESSAGE
+              valueFrom: { configMapKeyRef: { name: web-config, key: APP_MESSAGE } }
+          volumeMounts:
+            - { name: html, mountPath: /html }
+            - { name: config, mountPath: /config }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - { name: http, containerPort: 80 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 5"] }   # let the Service stop sending traffic first
+          volumeMounts:
+            - { name: html, mountPath: /usr/share/nginx/html }
+            - { name: config, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: html
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: web-config
+            items:
+              - { key: default.conf, path: default.conf }
+              - { key: render.sh, path: render.sh }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: demo
+spec:
+  selector:
+    app: web
+  ports:
+    - { name: http, port: 80, targetPort: http }

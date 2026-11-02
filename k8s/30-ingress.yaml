@@ -1,0 +1,23 @@
+# One front door (Traefik, bundled with k3s, published on the instance's port 8080).
+# "/" goes to the web pods, "/notes" to the stateful notes pod.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /notes
+            pathType: Prefix
+            backend:
+              service:
+                name: notes
+                port: { name: http }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port: { name: http }

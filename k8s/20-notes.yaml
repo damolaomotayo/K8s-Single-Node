@@ -1,0 +1,88 @@
+# A stateful example: every time the pod starts it appends one line to /data/starts.log on a
+# PersistentVolumeClaim. Delete the pod and the file (and its history) survives.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notes-config
+  namespace: demo
+data:
+  default.conf: |
+    server {
+      listen 80;
+      add_header Cache-Control "no-store" always;
+      location = /healthz { default_type text/plain; return 200 "ok\n"; }
+      location /notes/ {
+        alias /data/;
+        autoindex on;
+        default_type text/plain;
+      }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notes-data
+  namespace: demo
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 100Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notes
+  namespace: demo
+  labels:
+    app: notes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # a ReadWriteOnce volume can be used by one pod at a time
+  selector:
+    matchLabels:
+      app: notes
+  template:
+    metadata:
+      labels:
+        app: notes
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "started $(date -u +%FT%TZ) as ${HOSTNAME}" >> /data/starts.log
+              exec nginx -g 'daemon off;'
+          ports:
+            - { name: http, containerPort: 80 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: notes-data
+        - name: config
+          configMap:
+            name: notes-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notes
+  namespace: demo
+spec:
+  selector:
+    app: notes
+  ports:
+    - { name: http, port: 80, targetPort: http }

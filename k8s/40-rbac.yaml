@@ -1,0 +1,30 @@
+# Least privilege: the "viewer" service account may list and read pods in this namespace, and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: viewer
+  namespace: demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: demo
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: viewer-reads-pods
+  namespace: demo
+subjects:
+  - kind: ServiceAccount
+    name: viewer
+    namespace: demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-reader

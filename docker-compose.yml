@@ -1,0 +1,30 @@
+name: k8s-box
+
+# A whole single-node Kubernetes cluster (k3s, the lightweight official-CNCF-certified distribution) running
+# inside ONE Docker container on this instance. Only the ingress port is published; the Kubernetes API (6443)
+# stays inside the container and is used through "docker exec ... kubectl".
+services:
+  server:
+    image: ${K3S_IMAGE:-rancher/k3s:v1.30.5-k3s1}
+    container_name: k8s-box-server
+    command: server --disable metrics-server --write-kubeconfig-mode 644
+    privileged: true                 # k3s runs containerd, kubelet and networking inside this container
+    restart: unless-stopped
+    tmpfs:
+      - /run
+      - /var/run
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    environment:
+      K3S_TOKEN: ${K3S_TOKEN:?run ./scripts/up.sh, it creates .env}
+    volumes:
+      - k3s-data:/var/lib/rancher/k3s   # cluster state AND the image cache, so restarts are fast
+      - ./k8s:/manifests:ro             # the YAML files, visible to kubectl inside the container
+    ports:
+      - "8080:80"                       # Traefik ingress -> http://<EC2-PUBLIC-IP>:8080/
+
+volumes:
+  k3s-data:
